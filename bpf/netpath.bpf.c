@@ -59,3 +59,89 @@ int BPF_KPROBE(trace_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t le
 	return 0;
 }
 
+SEC("kprobe/ip_send_skb")
+int BPF_KPROBE(trace_ip_send_skb, struct net *net, struct sk_buff *skb)
+{
+	struct sock *sk = BPF_CORE_READ(skb, sk);
+	if (!check_port(sk))
+		return 0;
+
+	struct event *e = reserve_event();
+	if (!e) return 0;
+	fill_common(e, skb, STAGE_IP);
+
+	void *head = BPF_CORE_READ(skb, head);
+	unsigned short net_off = BPF_CORE_READ(skb, network_header);
+	struct iphdr iph = {};
+	bpf_probe_read_kernel(&iph, sizeof(iph), head + net_off);
+
+	e->saddr = iph.saddr;
+	e->daddr = iph.daddr;
+	e->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	e->sport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_num));
+
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("kprobe/ip_finish_output2")
+int BPF_KPROBE(trace_ip_finish_output2, struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+	if (!check_port(sk))
+		return 0;
+
+	struct event *e = reserve_event();
+	if (!e) return 0;
+	fill_common(e, skb, STAGE_ROUTE);
+
+	struct net_device *dev = BPF_CORE_READ(skb, dev);
+	if (dev) {
+		e->ifindex = BPF_CORE_READ(dev, ifindex);
+		bpf_probe_read_kernel_str(e->ifname, sizeof(e->ifname), dev->name);
+	}
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("kprobe/__dev_queue_xmit")
+int BPF_KPROBE(trace_dev_queue_xmit, struct sk_buff *skb)
+{
+	struct sock *sk = BPF_CORE_READ(skb, sk);
+	if (!check_port(sk))
+		return 0;
+
+	struct event *e = reserve_event();
+	if (!e) return 0;
+	fill_common(e, skb, STAGE_DEV);
+
+	struct net_device *dev = BPF_CORE_READ(skb, dev);
+	if (dev) {
+		e->ifindex = BPF_CORE_READ(dev, ifindex);
+		bpf_probe_read_kernel_str(e->ifname, sizeof(e->ifname), dev->name);
+	}
+
+	void *head = BPF_CORE_READ(skb, head);
+	unsigned short mac_off = BPF_CORE_READ(skb, mac_header);
+	struct ethhdr eth = {};
+	bpf_probe_read_kernel(&eth, sizeof(eth), head + mac_off);
+	__builtin_memcpy(e->src_mac, eth.h_source, 6);
+	__builtin_memcpy(e->dst_mac, eth.h_dest, 6);
+
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("kprobe/e1000_xmit_frame")
+int BPF_KPROBE(trace_e1000_xmit_frame, struct sk_buff *skb)
+{
+	struct sock *sk = BPF_CORE_READ(skb, sk);
+	if (!check_port(sk))
+		return 0;
+
+	struct event *e = reserve_event();
+	if (!e) return 0;
+	fill_common(e, skb, STAGE_DRIVER);
+	e->len = BPF_CORE_READ(skb, len);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
