@@ -118,14 +118,8 @@ int BPF_KPROBE(trace_dev_queue_xmit, struct sk_buff *skb)
 	if (dev) {
 		e->ifindex = BPF_CORE_READ(dev, ifindex);
 		bpf_probe_read_kernel_str(e->ifname, sizeof(e->ifname), dev->name);
+		bpf_probe_read_kernel(e->src_mac, 6, BPF_CORE_READ(dev, dev_addr));
 	}
-
-	void *head = BPF_CORE_READ(skb, head);
-	unsigned short mac_off = BPF_CORE_READ(skb, mac_header);
-	struct ethhdr eth = {};
-	bpf_probe_read_kernel(&eth, sizeof(eth), head + mac_off);
-	__builtin_memcpy(e->src_mac, eth.h_source, 6);
-	__builtin_memcpy(e->dst_mac, eth.h_dest, 6);
 
 	bpf_ringbuf_submit(e, 0);
 	return 0;
